@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.env
+
+# Data/Models (REGENERATE LOCALLY)
+data/raw/*.csv
+data/processed/*
+*.pkl
+*.joblib
+
+# IDE
+.vscode/
+.idea/
