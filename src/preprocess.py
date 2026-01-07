@@ -1,126 +1,137 @@
-"""
-Day 1-2: Full TMDB Dataset Processing (Movies + Credits)
-Purpose: Load both CSVs → merge → parse JSON → create rich combined text → save
-"""
-
+import streamlit as st
 import pandas as pd
 import numpy as np
-import json
-import re
+import requests
 from pathlib import Path
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 import joblib
 
-def load_full_dataset() -> pd.DataFrame:
-    """Load movies.csv + credits.csv and merge correctly."""
-    movies_path = Path("data/raw/tmdb_5000_movies.csv")
-    credits_path = Path("data/raw/tmdb_5000_credits.csv")
-    
-    movies_df = pd.read_csv(movies_path)
-    credits_df = pd.read_csv(credits_path)
-    
-    # Credits CSV has 'movie_id', movies has 'id' → rename for merge
-    credits_df = credits_df.rename(columns={'movie_id': 'id'})
-    
-    # Now merge works
-    df = movies_df.merge(credits_df, on='id', how='left', suffixes=('', '_credits'))
-    print(f"✅ Merged: {len(df)} movies with cast/crew data")
-    print("📊 Sample columns after merge:", df[['title', 'genres', 'cast', 'crew']].columns.tolist())
-    print("\n📈 First row sample:")
-    print(df[['title', 'genres', 'cast']].head(1))
-    return df
+# ⚠️ REPLACE WITH YOUR REAL TMDB KEY (50+ chars, starts with eyJ...)
+TMDB_API_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIxMjM0NTY3ODkwIiwic3ViIjoiMTIzNDU2Nzg5MCIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.abc123def456"
+TMDB_IMAGE_URL = "https://image.tmdb.org/t/p/w500"
 
-def parse_json_column(df: pd.DataFrame, col: str, max_items: int = 3) -> pd.DataFrame:
-    """
-    JSON → clean names string. Purpose: Extract readable info from messy JSON.
-    genres: ["Action", "Adventure"] → "Action Adventure"
-    cast: [{"name": "Chris Hemsworth"}] → "Chris Hemsworth Robert Downey Jr."
-    """
-    def extract_names(json_str):
-        if pd.isna(json_str):
-            return ""
-        try:
-            items = json.loads(json_str)
-            if col == 'crew':
-                # For crew, only get Directors (job == 'Director')
-                directors = [item.get('name', '') for item in items if item.get('job') == 'Director']
-                return " ".join(directors[:max_items])
-            else:
-                # genres/keywords/cast: top N names
-                names = [item.get('name', '') for item in items[:max_items]]
-                return " ".join(names)
-        except:
-            return ""
-    
-    parsed_col = col + '_parsed'
-    df[parsed_col] = df[col].apply(extract_names)
-    print(f"✅ Parsed {col}: '{df[parsed_col].iloc[0]}'")
-    return df
+@st.cache_data(ttl=3600)
+def fetch_poster(title: str) -> str:
+    """Fetch movie poster with better error handling."""
+    url = "https://api.themoviedb.org/3/search/movie"
+    params = {"api_key": TMDB_API_KEY, "query": title[:50]}  # Truncate long titles
+    try:
+        res = requests.get(url, params=params, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("results") and data["results"][0].get("poster_path"):
+                return f"{TMDB_IMAGE_URL}{data['results'][0]['poster_path']}"
+        st.caption(f"API status: {res.status_code}")  # Debug
+    except Exception as e:
+        st.caption(f"API error: {str(e)[:30]}...")
+    return None
 
-def create_combined_text(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Rich feature combination: genres + keywords + top cast + director + overview.
-    Purpose: Single text field representing ALL movie characteristics for TF-IDF.
-    """
-    text_features = [
-        'genres_parsed',    # "Action Adventure Fantasy"
-        'keywords_parsed',  # "superhero marvel avengers"
-        'cast_parsed',      # "Chris Hemsworth Natalie Portman"
-        'crew_parsed',      # "Taika Waititi" (director)
-        'overview'          # "Thor returns to Asgard..."
-    ]
+@st.cache_data
+def load_and_process_data():
+    """Load processed data + build model live."""
+    processed_path = Path("data/processed/movies_processed.pkl")
+    if not processed_path.exists():
+        st.error("❌ Run `python src/preprocess.py` first!")
+        st.stop()
     
-    # Fill NaN → ""
-    for feature in text_features:
-        df[feature] = df[feature].fillna("")
+    df = joblib.load(processed_path)
+    titles = df['title'].tolist()
     
-    # Combine into ONE text field per movie
-    df['combined_text'] = df[text_features].agg(' '.join, axis=1).str.lower()
+    # Build model (fast after cache)
+    vectorizer = TfidfVectorizer(max_features=3000, stop_words='english', ngram_range=(1,2))
+    tfidf = vectorizer.fit_transform(df['combined_text'])
+    similarity = cosine_similarity(tfidf)
     
-    # Clean: collapse multiple spaces
-    df['combined_text'] = df['combined_text'].apply(
-        lambda x: re.sub(r'\s+', ' ', x)
-    )
+    title_to_idx = {t: i for i, t in enumerate(titles)}
     
-    print("✅ Combined text created. Sample (first 200 chars):")
-    print(repr(df['combined_text'].iloc[0][:200]))
-    return df
+    return {
+        'titles': titles,
+        'title_to_idx': title_to_idx,
+        'similarity': similarity,
+        'df': df
+    }
+
+def get_recommendations(model_data, title: str, top_n: int = 10):
+    titles = model_data['titles']
+    title_to_idx = model_data['title_to_idx']
+    similarity = model_data['similarity']
+    
+    if title not in title_to_idx:
+        return []
+    
+    idx = title_to_idx[title]
+    scores = list(enumerate(similarity[idx]))
+    scores = sorted(scores, key=lambda x: x[1], reverse=True)[1:top_n+1]
+    
+    return [(titles[i], score) for i, score in scores]
 
 def main():
-    """Complete pipeline."""
-    RAW_MOVIES = Path("data/raw/tmdb_5000_movies.csv")
-    RAW_CREDITS = Path("data/raw/tmdb_5000_credits.csv")
-    PROCESSED_PATH = Path("data/processed/movies_processed.pkl")
+    st.set_page_config(page_title="Movie Recommender", page_icon="🎬", layout="wide")
     
-    # Check files exist
-    for path in [RAW_MOVIES, RAW_CREDITS]:
-        if not path.exists():
-            raise FileNotFoundError(f"❌ Missing {path}. Download from Kaggle TMDB dataset!")
+    st.title("🎬 Movie Recommendation System")
+    st.markdown("**Content-Based TF-IDF + Live TMDB Posters**")
     
-    # 1. Load + merge
-    df = load_full_dataset()
+    # API Key Check
+    if len(TMDB_API_KEY) < 40 or TMDB_API_KEY.startswith("eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIxMjM0"):  
+        st.error("🚨 **Line 13**: Replace `TMDB_API_KEY` with your real TMDB key!")
+        st.info("👉 [Get free key](https://www.themoviedb.org/settings/api)")
+        st.stop()
     
-    # 2. Parse all JSON columns
-    json_cols = ['genres', 'keywords', 'cast', 'crew']
-    for col in json_cols:
-        df = parse_json_column(df, col)
+    # Load model
+    with st.spinner("🔄 Loading movies + building TF-IDF model..."):
+        model_data = load_and_process_data()
+    st.success(f"✅ {len(model_data['titles'])} movies ready!")
     
-    # 3. Create combined text
-    df = create_combined_text(df)
+    # DEBUG SECTION - Remove after posters work
+    with st.sidebar:
+        st.header("🛠️ Debug Tools")
+        if st.button("🖼️ Test API (Avatar)"):
+            poster = fetch_poster("Avatar")
+            st.write(f"**Avatar poster**: {poster[:100] if poster else '❌ FAILED'}")
+        
+        st.header("📊 Model Stats")
+        st.metric("Movies", len(model_data['titles']))
+        st.metric("TF-IDF Features", model_data['similarity'].shape[1])
     
-    # 4. Final cleaned dataset
-    keep_cols = ['id', 'title', 'combined_text', 'overview']
-    df_final = df[keep_cols].drop_duplicates(subset=['title']).reset_index(drop=True)
+    # Main UI
+    col1, col2 = st.columns([1, 3])
     
-    print(f"\n🎉 Final dataset ready: {len(df_final)} unique movies")
-    print("📝 Sample titles + text length:")
-    print(df_final[['title', 'combined_text']].head())
+    with col1:
+        st.subheader("🎯 Pick a Movie")
+        movie_list = sorted(model_data['titles'])[:2000] + sorted(model_data['titles'])[-2000:]  # Top/bottom for variety
+        selected_movie = st.selectbox("Choose:", movie_list, index=100)
+        
+        top_n = st.slider("Recommendations:", 6, 15, 9, 3)
+        recommend_btn = st.button("🎥 GET RECOMMENDATIONS", type="primary", use_container_width=True)
     
-    # 5. Save
-    PROCESSED_PATH.parent.mkdir(exist_ok=True)
-    joblib.dump(df_final, PROCESSED_PATH)
-    print(f"💾 Saved processed data: {PROCESSED_PATH}")
+    with col2:
+        if recommend_btn:
+            with st.spinner("🎯 Finding similar movies..."):
+                recs = get_recommendations(model_data, selected_movie, top_n)
+                
+                if recs:
+                    st.markdown(f"### 🔥 Movies like **{selected_movie}**")
+                    
+                    # Netflix-style poster grid
+                    cols = st.columns(3)
+                    for i, (movie, score) in enumerate(recs):
+                        with cols[i % 3]:
+                            poster = fetch_poster(movie)
+                            if poster:
+                                st.image(poster, use_container_width=True)
+                            else:
+                                st.markdown("🖼️")
+                            
+                            st.markdown(f"**{movie}**")
+                            color = "🟢" if score > 0.4 else "🟡" if score > 0.2 else "🔴"
+                            st.caption(f"{color} **{score:.3f}** similarity")
+                else:
+                    st.error("❌ No recommendations found.")
     
-    return df_final
+    # Footer
+    st.markdown("---")
+    st.markdown("*Resume-ready ML project | SanthoshLSA | Deployed with Streamlit + TMDB API*")
 
 if __name__ == "__main__":
-    df_processed = main()
+    main()
