@@ -1,9 +1,9 @@
-# 🎬 Movie Recommendation System
+# Movie Recommendation System
 
 A content-based movie recommender using TMDB dataset with 4,800+ movies.
 
-## 🚀 Live Demo
-[View App](https://your-app.streamlit.app) *(will be updated after deployment)*
+## Live Demo
+[View App](https://movie-recommendation-system-a9jvmvyff5lcy9rkreappfd.streamlit.app/)
 
 ## Features
 - Find similar movies based on content
@@ -18,7 +18,7 @@ A content-based movie recommender using TMDB dataset with 4,800+ movies.
 
 ## Local Setup
 ```bash
-git clone https://github.com/YOUR_USERNAME/movie-recommendation-system.git
+git clone https://github.com/SanthoshLSA/movie-recommendation-system.git
 cd movie-recommendation-system
 pip install -r requirements.txt
 streamlit run app.py

@@ -138,8 +138,6 @@ def download_and_extract_data():
                         with zip_ref.open(file_info) as source:
                             with open(processed_pkl, 'wb') as target:
                                 target.write(source.read())
-            
-            st.success("✅ Data downloaded and extracted successfully!")
             return True
             
     except requests.exceptions.RequestException as e:
@@ -473,7 +471,7 @@ def main():
     left, right = st.columns([3, 1], gap="large")
     
     with left:
-        st.markdown(f'<div class="results-header">Showing {len(st.session_state.recs)} movies for {label}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="results-header">Showing movies for {label}</div>', unsafe_allow_html=True)
         
         cols = st.columns(4, gap="medium")
         
