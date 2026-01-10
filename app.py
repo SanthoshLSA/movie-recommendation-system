@@ -213,10 +213,21 @@ st.markdown("""
         padding: 1.25rem 1.5rem; background: rgba(59, 130, 246, 0.1);
         border-left: 4px solid #3b82f6; border-radius: 8px; margin-bottom: 1.5rem;
     }
+      /* Drawer */
     .drawer-card {
-        background: rgba(22, 33, 62, 0.55); border: 1px solid rgba(59, 130, 246, 0.18);
-        border-radius: 14px; padding: 1.5rem; box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+        position: fixed;
+        top: 2rem;
+        right: 3rem;
+        width: calc((100% - 6rem) / 4 - 1.5rem);
+        max-height: calc(100vh - 4rem);
+        overflow-y: auto;
+        background: rgba(22, 33, 62, 0.55);
+        border: 1px solid rgba(59, 130, 246, 0.18);
+        border-radius: 14px;
+        padding: 1.25rem 1.25rem;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.35);
         backdrop-filter: blur(6px);
+        z-index: 100;
     }
     .drawer-title { color: #ffffff; font-weight: 800; font-size: 1.2rem; margin-bottom: 0.5rem; }
     .drawer-sub { color: #60a5fa; font-weight: 600; font-size: 0.9rem; margin-bottom: 1rem; }
