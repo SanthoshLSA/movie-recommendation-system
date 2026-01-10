@@ -5,7 +5,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 import joblib
 from pathlib import Path
 
-# Same class as before but NO save_model() - just testing
 class MovieRecommender:
     def __init__(self, processed_data_path: str):
         self.movies_df = joblib.load(processed_data_path)

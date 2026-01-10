@@ -21,21 +21,11 @@ st.set_page_config(
 
 OMDB_API_KEY = "f5127ade"
 
-# ========================================
-# UPDATE THIS WITH YOUR GOOGLE DRIVE LINK
-# ========================================
-# After uploading to Google Drive, replace YOUR_FILE_ID with your actual file ID
-# Example: If your share link is https://drive.google.com/file/d/1ABC123XYZ456/view?usp=sharing
-# Then your FILE_ID is: 1ABC123XYZ456
 GOOGLE_DRIVE_URL = "https://drive.google.com/uc?export=download&id=1OAzul4r3lki8sb5oYa0hbtl8Dmv8Szwk"
 
-# Alternatively, use Streamlit secrets (recommended for production)
 DATA_URL = st.secrets.get("DATA_URL", GOOGLE_DRIVE_URL)
 
 
-# ----------------------------
-# Download and setup data
-# ----------------------------
 @st.cache_data(show_spinner=False)
 def download_and_extract_data():
     """Download data files from Google Drive if they don't exist locally"""
@@ -78,8 +68,6 @@ def download_and_extract_data():
     # Download data
     try:
         with st.spinner("⏬ Downloading movie data (first time only, ~50MB)..."):
-            # For large files, Google Drive may return a confirmation page
-            # We need to handle this
             session = requests.Session()
             response = session.get(DATA_URL, stream=True, timeout=300)
             
