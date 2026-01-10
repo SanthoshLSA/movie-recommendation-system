@@ -1,19 +1,24 @@
+# Large data files - downloaded from Google Drive
+data/tmdb_5000_movies.csv
+data/tmdb_5000_credits.csv
+data/processed/movies_processed.pkl
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
 venv/
 env/
-.env
-
-# Data/Models (REGENERATE LOCALLY)
-data/raw/*.csv
-data/processed/*
-*.pkl
-*.joblib
+.venv/
 
 # IDE
 .vscode/
 .idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep directory structure
+!data/.gitkeep
+!data/processed/.gitkeep

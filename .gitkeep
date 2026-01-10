@@ -1,0 +1,3 @@
+# Create empty files to preserve directory structure
+New-Item -ItemType File -Force -Path "data\.gitkeep"
+New-Item -ItemType File -Force -Path "data\processed\.gitkeep"
