@@ -56,7 +56,7 @@ def download_and_extract_data():
     processed_dir.mkdir(exist_ok=True)
     
     # Check if URL is configured
-    if "https://drive.google.com/uc?export=download&id=1OAzul4r3lki8sb5oYa0hbtl8Dmv8Szwk" in DATA_URL:
+    if "YOUR_FILE_ID_HERE" in DATA_URL:
         st.error("""
         **⚠️ Data URL not configured!**
         
