@@ -29,7 +29,8 @@ OMDB_API_KEY = "f5127ade"
 # Then your FILE_ID is: 1ABC123XYZ456
 GOOGLE_DRIVE_URL = "https://drive.google.com/uc?export=download&id=1OAzul4r3lki8sb5oYa0hbtl8Dmv8Szwk"
 
-
+# Alternatively, use Streamlit secrets (recommended for production)
+DATA_URL = st.secrets.get("DATA_URL", GOOGLE_DRIVE_URL)
 # ----------------------------
 # Download and setup data
 # ----------------------------
@@ -53,7 +54,7 @@ def download_and_extract_data():
     processed_dir.mkdir(exist_ok=True)
     
     # Check if URL is configured
-    if "YOUR_FILE_ID_HERE" in DATA_URL:
+    if "https://drive.google.com/uc?export=download&id=1OAzul4r3lki8sb5oYa0hbtl8Dmv8Szwk" in DATA_URL:
         st.error("""
         **⚠️ Data URL not configured!**
         
