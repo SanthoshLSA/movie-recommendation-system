@@ -1,137 +1,216 @@
-import streamlit as st
 import pandas as pd
-import numpy as np
-import requests
-from pathlib import Path
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 import joblib
+from pathlib import Path
+import ast
+import numpy as np
 
-# ⚠️ REPLACE WITH YOUR REAL TMDB KEY (50+ chars, starts with eyJ...)
-TMDB_API_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIxMjM0NTY3ODkwIiwic3ViIjoiMTIzNDU2Nzg5MCIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.abc123def456"
-TMDB_IMAGE_URL = "https://image.tmdb.org/t/p/w500"
 
-@st.cache_data(ttl=3600)
-def fetch_poster(title: str) -> str:
-    """Fetch movie poster with better error handling."""
-    url = "https://api.themoviedb.org/3/search/movie"
-    params = {"api_key": TMDB_API_KEY, "query": title[:50]}  # Truncate long titles
+def safe_literal_eval(val):
+    """Safely evaluate string representations of lists/dicts."""
+    if pd.isna(val):
+        return []
+    if isinstance(val, list):
+        return val
     try:
-        res = requests.get(url, params=params, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("results") and data["results"][0].get("poster_path"):
-                return f"{TMDB_IMAGE_URL}{data['results'][0]['poster_path']}"
-        st.caption(f"API status: {res.status_code}")  # Debug
-    except Exception as e:
-        st.caption(f"API error: {str(e)[:30]}...")
+        return ast.literal_eval(val)
+    except (ValueError, SyntaxError):
+        return []
+
+
+def extract_names(obj_list, key='name', limit=None):
+    """Extract names from a list of dictionaries."""
+    if not isinstance(obj_list, list):
+        return []
+    names = [item[key] for item in obj_list if isinstance(item, dict) and key in item]
+    if limit:
+        names = names[:limit]
+    return names
+
+
+def extract_director(crew_list):
+    """Extract director name from crew list."""
+    if not isinstance(crew_list, list):
+        return None
+    for person in crew_list:
+        if isinstance(person, dict) and person.get('job') == 'Director':
+            return person.get('name')
     return None
 
-@st.cache_data
-def load_and_process_data():
-    """Load processed data + build model live."""
-    processed_path = Path("data/processed/movies_processed.pkl")
-    if not processed_path.exists():
-        st.error("❌ Run `python src/preprocess.py` first!")
-        st.stop()
-    
-    df = joblib.load(processed_path)
-    titles = df['title'].tolist()
-    
-    # Build model (fast after cache)
-    vectorizer = TfidfVectorizer(max_features=3000, stop_words='english', ngram_range=(1,2))
-    tfidf = vectorizer.fit_transform(df['combined_text'])
-    similarity = cosine_similarity(tfidf)
-    
-    title_to_idx = {t: i for i, t in enumerate(titles)}
-    
-    return {
-        'titles': titles,
-        'title_to_idx': title_to_idx,
-        'similarity': similarity,
-        'df': df
-    }
 
-def get_recommendations(model_data, title: str, top_n: int = 10):
-    titles = model_data['titles']
-    title_to_idx = model_data['title_to_idx']
-    similarity = model_data['similarity']
+def preprocess_tmdb_data():
+    """
+    Combine TMDB movies and credits datasets, extract features,
+    and prepare for the recommendation system.
+    """
+    # Create output directory
+    output_dir = Path("data/processed")
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    if title not in title_to_idx:
-        return []
+    # Load datasets
+    print("Loading datasets...")
+    movies_path = Path("data/raw/tmdb_5000_movies.csv")
+    credits_path = Path("data/raw/tmdb_5000_credits.csv")
     
-    idx = title_to_idx[title]
-    scores = list(enumerate(similarity[idx]))
-    scores = sorted(scores, key=lambda x: x[1], reverse=True)[1:top_n+1]
+    if not movies_path.exists():
+        raise FileNotFoundError(f"Could not find {movies_path}")
+    if not credits_path.exists():
+        raise FileNotFoundError(f"Could not find {credits_path}")
     
-    return [(titles[i], score) for i, score in scores]
+    movies = pd.read_csv(movies_path)
+    credits = pd.read_csv(credits_path)
+    
+    print(f"Loaded {len(movies)} movies and {len(credits)} credits")
+    
+    # Merge datasets on movie_id (or title if ids don't match)
+    if 'id' in movies.columns and 'movie_id' in credits.columns:
+        df = movies.merge(credits, left_on='id', right_on='movie_id', how='left', suffixes=('', '_credits'))
+    else:
+        df = movies.merge(credits, on='title', how='left', suffixes=('', '_credits'))
+    
+    print(f"Combined dataset: {len(df)} rows")
+    print(f"Columns after merge: {list(df.columns)}")
+    
+    # Parse JSON-like columns
+    print("Parsing JSON columns...")
+    
+    # Genres
+    if 'genres' in df.columns:
+        df['genres_parsed'] = df['genres'].apply(safe_literal_eval)
+        df['genre_names'] = df['genres_parsed'].apply(lambda x: extract_names(x))
+        df['genres'] = df['genre_names'].apply(lambda x: '|'.join(x) if x else '')
+    
+    # Keywords
+    if 'keywords' in df.columns:
+        df['keywords_parsed'] = df['keywords'].apply(safe_literal_eval)
+        df['keyword_names'] = df['keywords_parsed'].apply(lambda x: extract_names(x))
+    
+    # Cast (top 5 actors)
+    if 'cast' in df.columns:
+        df['cast_parsed'] = df['cast'].apply(safe_literal_eval)
+        df['cast_names'] = df['cast_parsed'].apply(lambda x: extract_names(x, limit=5))
+    
+    # Crew (extract director)
+    if 'crew' in df.columns:
+        df['crew_parsed'] = df['crew'].apply(safe_literal_eval)
+        df['director'] = df['crew_parsed'].apply(extract_director)
+    
+    # Production companies
+    if 'production_companies' in df.columns:
+        df['companies_parsed'] = df['production_companies'].apply(safe_literal_eval)
+        df['company_names'] = df['companies_parsed'].apply(lambda x: extract_names(x, limit=3))
+    
+    # Create combined_text for TF-IDF
+    print("Creating combined text features...")
+    text_parts = []
+    
+    # Overview
+    if 'overview' in df.columns:
+        text_parts.append(df['overview'].fillna(''))
+    
+    # Genres
+    if 'genre_names' in df.columns:
+        text_parts.append(df['genre_names'].apply(lambda x: ' '.join(x) if isinstance(x, list) else ''))
+    
+    # Keywords
+    if 'keyword_names' in df.columns:
+        text_parts.append(df['keyword_names'].apply(lambda x: ' '.join(x) if isinstance(x, list) else ''))
+    
+    # Cast
+    if 'cast_names' in df.columns:
+        text_parts.append(df['cast_names'].apply(lambda x: ' '.join(x) if isinstance(x, list) else ''))
+    
+    # Director
+    if 'director' in df.columns:
+        text_parts.append(df['director'].fillna(''))
+    
+    # Tagline
+    if 'tagline' in df.columns:
+        text_parts.append(df['tagline'].fillna(''))
+    
+    # Combine all text
+    df['combined_text'] = pd.Series([' '.join(str(p) for p in parts) for parts in zip(*text_parts)])
+    
+    # Select final columns
+    columns_to_keep = [
+        'id',
+        'title',
+        'overview',
+        'genres',  # pipe-separated string
+        'release_date',
+        'runtime',
+        'vote_average',
+        'vote_count',
+        'popularity',
+        'budget',
+        'revenue',
+        'original_language',
+        'status',
+        'tagline',
+        'combined_text',
+    ]
+    
+    # Add optional columns if they exist
+    optional_cols = ['director', 'homepage']
+    for col in optional_cols:
+        if col in df.columns:
+            columns_to_keep.append(col)
+    
+    # Keep only available columns
+    available_cols = [col for col in columns_to_keep if col in df.columns]
+    df_processed = df[available_cols].copy()
+    
+    # Clean data
+    print("Cleaning data...")
+    
+    # Remove duplicates
+    df_processed = df_processed.drop_duplicates(subset=['title'], keep='first')
+    
+    # Remove rows with missing titles
+    df_processed = df_processed[df_processed['title'].notna()]
+    
+    # Fill NaN values
+    if 'overview' in df_processed.columns:
+        df_processed['overview'] = df_processed['overview'].fillna('No overview available.')
+    
+    if 'genres' in df_processed.columns:
+        df_processed['genres'] = df_processed['genres'].fillna('')
+    
+    # Convert numeric columns
+    numeric_cols = ['vote_average', 'vote_count', 'popularity', 'budget', 'revenue', 'runtime']
+    for col in numeric_cols:
+        if col in df_processed.columns:
+            df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
+    
+    # Reset index
+    df_processed = df_processed.reset_index(drop=True)
+    
+    # Save
+    output_path = output_dir / "movies_processed.pkl"
+    joblib.dump(df_processed, output_path)
+    
+    print(f"\n✓ Successfully processed {len(df_processed)} movies")
+    print(f"✓ Saved to {output_path}")
+    print(f"\nColumns included: {list(df_processed.columns)}")
+    print(f"\nSample data:")
+    print(df_processed[['title', 'genres', 'vote_average']].head())
+    
+    # Show genre distribution
+    if 'genres' in df_processed.columns:
+        all_genres = []
+        for genres_str in df_processed['genres'].dropna():
+            all_genres.extend(genres_str.split('|'))
+        genre_counts = pd.Series(all_genres).value_counts()
+        print(f"\nTop 10 genres:")
+        print(genre_counts.head(10))
+    
+    return df_processed
 
-def main():
-    st.set_page_config(page_title="Movie Recommender", page_icon="🎬", layout="wide")
-    
-    st.title("🎬 Movie Recommendation System")
-    st.markdown("**Content-Based TF-IDF + Live TMDB Posters**")
-    
-    # API Key Check
-    if len(TMDB_API_KEY) < 40 or TMDB_API_KEY.startswith("eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIxMjM0"):  
-        st.error("🚨 **Line 13**: Replace `TMDB_API_KEY` with your real TMDB key!")
-        st.info("👉 [Get free key](https://www.themoviedb.org/settings/api)")
-        st.stop()
-    
-    # Load model
-    with st.spinner("🔄 Loading movies + building TF-IDF model..."):
-        model_data = load_and_process_data()
-    st.success(f"✅ {len(model_data['titles'])} movies ready!")
-    
-    # DEBUG SECTION - Remove after posters work
-    with st.sidebar:
-        st.header("🛠️ Debug Tools")
-        if st.button("🖼️ Test API (Avatar)"):
-            poster = fetch_poster("Avatar")
-            st.write(f"**Avatar poster**: {poster[:100] if poster else '❌ FAILED'}")
-        
-        st.header("📊 Model Stats")
-        st.metric("Movies", len(model_data['titles']))
-        st.metric("TF-IDF Features", model_data['similarity'].shape[1])
-    
-    # Main UI
-    col1, col2 = st.columns([1, 3])
-    
-    with col1:
-        st.subheader("🎯 Pick a Movie")
-        movie_list = sorted(model_data['titles'])[:2000] + sorted(model_data['titles'])[-2000:]  # Top/bottom for variety
-        selected_movie = st.selectbox("Choose:", movie_list, index=100)
-        
-        top_n = st.slider("Recommendations:", 6, 15, 9, 3)
-        recommend_btn = st.button("🎥 GET RECOMMENDATIONS", type="primary", use_container_width=True)
-    
-    with col2:
-        if recommend_btn:
-            with st.spinner("🎯 Finding similar movies..."):
-                recs = get_recommendations(model_data, selected_movie, top_n)
-                
-                if recs:
-                    st.markdown(f"### 🔥 Movies like **{selected_movie}**")
-                    
-                    # Netflix-style poster grid
-                    cols = st.columns(3)
-                    for i, (movie, score) in enumerate(recs):
-                        with cols[i % 3]:
-                            poster = fetch_poster(movie)
-                            if poster:
-                                st.image(poster, use_container_width=True)
-                            else:
-                                st.markdown("🖼️")
-                            
-                            st.markdown(f"**{movie}**")
-                            color = "🟢" if score > 0.4 else "🟡" if score > 0.2 else "🔴"
-                            st.caption(f"{color} **{score:.3f}** similarity")
-                else:
-                    st.error("❌ No recommendations found.")
-    
-    # Footer
-    st.markdown("---")
-    st.markdown("*Resume-ready ML project | SanthoshLSA | Deployed with Streamlit + TMDB API*")
 
 if __name__ == "__main__":
-    main()
+    try:
+        preprocess_tmdb_data()
+        print("\n✓ Preprocessing complete! You can now run your Streamlit app.")
+    except Exception as e:
+        print(f"\n✗ Error: {e}")
+        import traceback
+        traceback.print_exc()

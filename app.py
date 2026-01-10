@@ -3,12 +3,13 @@ import pandas as pd
 import numpy as np
 import requests
 from pathlib import Path
+import ast
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import joblib
 
-from streamlit_clickable_images import clickable_images  # pip install st-clickable-images
+from streamlit_clickable_images import clickable_images
 
 
 # ----------------------------
@@ -86,8 +87,7 @@ st.markdown(
         color: #3b82f6; font-weight: 500; font-size: 0.85rem;
         margin: 0 0 0.8rem 0;
     }
-    
-    /* Fix clickable images container */
+
     div[data-testid="column"] > div > div {
         min-height: 450px;
     }
@@ -100,7 +100,7 @@ st.markdown(
         border-radius: 8px;
     }
 
-     /* Drawer */
+    /* Drawer */
     .drawer-card {
         position: fixed;
         top: 2rem;
@@ -164,13 +164,62 @@ def fetch_poster(title: str) -> str:
         data = response.json()
         if data.get("Response") == "True" and data.get("Poster") and data["Poster"] != "N/A":
             poster_url = data["Poster"]
-            # Ensure HTTPS for secure loading
             if poster_url.startswith("http://"):
                 poster_url = poster_url.replace("http://", "https://")
             return poster_url
-    except Exception as e:
+    except Exception:
         pass
     return "https://via.placeholder.com/300x450/1a1a2e/60a5fa?text=No+Poster"
+
+
+def parse_genres_cell(val) -> list[str]:
+    """
+    Return a list of genre names from many common formats:
+    - list: ["Action", "Drama"]
+    - pipe string: "Action|Drama"
+    - comma string: "Action, Drama"
+    - stringified list: "['Action','Drama']"
+    - stringified list of dicts: "[{'id': 28, 'name': 'Action'}, ...]"
+    """
+    if val is None:
+        return []
+    if isinstance(val, float) and np.isnan(val):
+        return []
+
+    if isinstance(val, list):
+        out = []
+        for item in val:
+            if isinstance(item, dict) and "name" in item:
+                out.append(str(item["name"]).strip())
+            else:
+                out.append(str(item).strip())
+        return [g for g in out if g]
+
+    s = str(val).strip()
+    if not s or s.lower() in {"nan", "none"}:
+        return []
+
+    if "|" in s:
+        return [g.strip() for g in s.split("|") if g.strip()]
+
+    if "," in s:
+        return [g.strip() for g in s.split(",") if g.strip()]
+
+    if s.startswith("[") and s.endswith("]"):
+        try:
+            parsed = ast.literal_eval(s)
+            if isinstance(parsed, list):
+                out = []
+                for item in parsed:
+                    if isinstance(item, dict) and "name" in item:
+                        out.append(str(item["name"]).strip())
+                    else:
+                        out.append(str(item).strip())
+                return [g for g in out if g]
+        except (ValueError, SyntaxError):
+            return []
+
+    return [s]
 
 
 @st.cache_data(show_spinner=False)
@@ -182,21 +231,43 @@ def load_and_process_data():
 
     df = joblib.load(processed_path)
 
-    # Ensure these exist
+    # Ensure required columns
+    if "title" not in df.columns:
+        st.error("Processed file must include a 'title' column.")
+        st.stop()
     if "overview" not in df.columns:
         df["overview"] = ""
     if "combined_text" not in df.columns:
         st.error("Processed file must include a 'combined_text' column used for TF-IDF.")
         st.stop()
 
-    titles = df["title"].astype(str).tolist()
+    # Detect which column contains genres
+    candidate_genre_cols = ["genres", "genre", "Genre", "genre_names", "genres_list"]
+    genre_col = next((c for c in candidate_genre_cols if c in df.columns), None)
 
+    # Build unique genre list (if we found a column)
+    unique_genres = set()
+    if genre_col is not None:
+        for v in df[genre_col].dropna():
+            for g in parse_genres_cell(v):
+                if g and len(g) > 1:
+                    unique_genres.add(g)
+
+    titles = df["title"].astype(str).tolist()
     vectorizer = TfidfVectorizer(max_features=3000, stop_words="english", ngram_range=(1, 2))
     tfidf = vectorizer.fit_transform(df["combined_text"].fillna(""))
     similarity = cosine_similarity(tfidf)
 
     title_to_idx = {t: i for i, t in enumerate(titles)}
-    return {"titles": titles, "title_to_idx": title_to_idx, "similarity": similarity, "df": df}
+
+    return {
+        "titles": titles,
+        "title_to_idx": title_to_idx,
+        "similarity": similarity,
+        "df": df,
+        "genre_col": genre_col,
+        "unique_genres": sorted(unique_genres),
+    }
 
 
 def get_recommendations(model_data, title: str, top_n: int = 10):
@@ -213,6 +284,25 @@ def get_recommendations(model_data, title: str, top_n: int = 10):
     return [(titles[i], float(score)) for i, score in scores]
 
 
+def get_movies_by_genre(model_data, genre: str, limit: int = 20):
+    df = model_data["df"]
+    genre_col = model_data.get("genre_col")
+
+    # If no genre col exists, just show first `limit`
+    if not genre_col:
+        titles = df["title"].astype(str).tolist()[:limit]
+        return [(t, 1.0) for t in titles]
+
+    if genre == "All":
+        titles = df["title"].astype(str).tolist()[:limit]
+        return [(t, 1.0) for t in titles]
+
+    mask = df[genre_col].apply(lambda v: genre in parse_genres_cell(v))
+    filtered = df[mask]
+    titles = filtered["title"].astype(str).tolist()[:limit]
+    return [(t, 1.0) for t in titles]
+
+
 def get_row(model_data, title: str):
     df = model_data["df"]
     match = df[df["title"] == title]
@@ -221,27 +311,101 @@ def get_row(model_data, title: str):
     return match.iloc[0]
 
 
-def fmt_value(v):
+def fmt_value(v, field_name=None):
+    """Format values for display with appropriate formatting."""
     if v is None:
         return None
     if isinstance(v, float) and np.isnan(v):
         return None
+    
+    # Format budget and revenue
+    if field_name in ['budget', 'revenue']:
+        try:
+            num = float(v)
+            if num == 0:
+                return None
+            if num >= 1_000_000_000:
+                return f"${num/1_000_000_000:.1f}B"
+            elif num >= 1_000_000:
+                return f"${num/1_000_000:.0f}M"
+            else:
+                return f"${num:,.0f}"
+        except (ValueError, TypeError):
+            return None
+    
+    # Format runtime
+    if field_name == 'runtime':
+        try:
+            minutes = int(float(v))
+            if minutes == 0:
+                return None
+            hours = minutes // 60
+            mins = minutes % 60
+            if hours > 0:
+                return f"{hours}h {mins}m"
+            return f"{mins}m"
+        except (ValueError, TypeError):
+            return None
+    
+    # Format rating
+    if field_name == 'vote_average':
+        try:
+            rating = float(v)
+            if rating == 0:
+                return None
+            return f"{rating:.1f}/10"
+        except (ValueError, TypeError):
+            return None
+    
+    # Format vote count
+    if field_name == 'vote_count':
+        try:
+            count = int(float(v))
+            if count == 0:
+                return None
+            if count >= 1000:
+                return f"{count:,} votes"
+            return f"{count} votes"
+        except (ValueError, TypeError):
+            return None
+    
+    # Format popularity
+    if field_name == 'popularity':
+        try:
+            pop = float(v)
+            if pop == 0:
+                return None
+            return f"{pop:.0f}"
+        except (ValueError, TypeError):
+            return None
+    
+    # Format genres (pipe-separated to comma-separated)
+    if field_name in ['genres', 'genre']:
+        s = str(v).strip()
+        if '|' in s:
+            return s.replace('|', ', ')
+        return s if s else None
+    
+    # Default formatting
     if isinstance(v, (list, tuple, set)):
         v = ", ".join(map(str, v))
-    return str(v).strip() if str(v).strip() else None
+    s = str(v).strip()
+    return s if s else None
 
 
 # ----------------------------
 # App
 # ----------------------------
 def main():
-    # Keep state across reruns (clicking posters triggers rerun)
+    # State
     if "recs" not in st.session_state:
         st.session_state.recs = []
     if "last_query" not in st.session_state:
-        st.session_state.last_query = None  # (selected_movie, top_n)
+        st.session_state.last_query = None  # (label, n)
     if "picked_title" not in st.session_state:
         st.session_state.picked_title = None
+    if "selected_genre" not in st.session_state:
+        st.session_state.selected_genre = "All"
 
     with st.spinner("Loading model..."):
         model_data = load_and_process_data()
@@ -250,13 +414,33 @@ def main():
     with st.sidebar:
         st.markdown('<div class="sidebar-header">Configuration</div>', unsafe_allow_html=True)
 
+        # Genre dropdown (instant load)
+        genre_options = ["All"]
+        if model_data.get("unique_genres"):
+            genre_options += model_data["unique_genres"]
+        else:
+            st.warning("No genre column found in your processed file (genres filter disabled).")
+
+        def on_genre_change():
+            g = st.session_state.selected_genre
+            st.session_state.recs = get_movies_by_genre(model_data, g, limit=20)
+            st.session_state.last_query = (f"Genre: {g}", 20)
+            st.session_state.picked_title = None
+
+        st.selectbox(
+            "Select genre",
+            options=genre_options,
+            key="selected_genre",
+            on_change=on_genre_change,
+        )
+
+        # Similarity mode (kept)
         movie_list = sorted(model_data["titles"])
         selected_movie = st.selectbox("Select a movie", movie_list, index=0)
 
         top_n = st.slider("Number of recommendations", 5, 25, 5, 1)
 
-        recommend_btn = st.button("Find Similar Movies", type="primary")
-        if recommend_btn:
+        if st.button("Find Similar Movies", type="primary"):
             with st.spinner("Analyzing similarities..."):
                 st.session_state.recs = get_recommendations(model_data, selected_movie, top_n)
                 st.session_state.last_query = (selected_movie, top_n)
@@ -265,18 +449,19 @@ def main():
     # Header
     st.markdown('<h1 style="font-family:Orbitron;">Movie Recommendation System</h1>', unsafe_allow_html=True)
 
-    if not (st.session_state.recs and st.session_state.last_query):
-        st.info('Pick a movie in the sidebar and click "Find Similar Movies" to see recommendations.')
+    # If nothing loaded yet, prompt user
+    if not st.session_state.recs:
+        st.info('Select a genre to load movies, or pick a movie and click "Find Similar Movies".')
         return
 
-    base_movie, _ = st.session_state.last_query
+    label, _n = st.session_state.last_query or ("Results", len(st.session_state.recs))
 
     # Layout: left grid + right drawer
-    left, right = st.columns([3, 1], gap="large")  # side-by-side layout [web:125]
+    left, right = st.columns([3, 1], gap="large")
 
     with left:
         st.markdown(
-            f'<div class="results-header">Movies similar to {base_movie}</div>',
+            f'<div class="results-header">Showing movies for {label}</div>',
             unsafe_allow_html=True,
         )
 
@@ -286,8 +471,6 @@ def main():
             with cols[i % 4]:
                 poster = fetch_poster(movie)
 
-                # Key point: clickable_images with ONE image -> still clickable, no navigation,
-                # and it renders progressively because we are inside the loop. [web:1]
                 clicked = clickable_images(
                     [poster],
                     titles=[movie],
@@ -304,11 +487,11 @@ def main():
                         "cursor": "pointer",
                         "object-fit": "cover",
                     },
-                    key=f"poster_{base_movie}_{i}",
+                    key=f"poster_{label}_{i}",
                 )
 
                 if clicked == 0:
-                    st.session_state.picked_title = movie  # persist selection via session state [web:141]
+                    st.session_state.picked_title = movie
 
                 st.markdown(f'<p class="movie-title">{movie}</p>', unsafe_allow_html=True)
                 st.markdown(f'<p class="similarity-score">Match: {score:.1%}</p>', unsafe_allow_html=True)
@@ -322,14 +505,12 @@ def main():
                 <div class="drawer-card">
                     <div class="drawer-title">Details</div>
                     <div class="drawer-sub">Click a poster</div>
-                    <p class="drawer-overview">Select any recommended movie poster to view details here.</p>
+                    <p class="drawer-overview">Select any movie poster to view details here.</p>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
         else:
-
-            # Drawer data
             row = get_row(model_data, picked)
             score_map = {m: s for m, s in st.session_state.recs}
             picked_score = score_map.get(picked, 0.0)
@@ -338,10 +519,9 @@ def main():
             if row is not None:
                 overview = fmt_value(row.get("overview")) or "No overview available."
 
-            # Optional fields to show if present in processed df
             candidate_fields = [
-                ("Release date", "release_date"),
-                ("Genres", "genres"),
+                ("Release Date", "release_date"),
+                ("Genres", model_data.get("genre_col") or "genres"),
                 ("Language", "original_language"),
                 ("Rating", "vote_average"),
                 ("Votes", "vote_count"),
@@ -351,28 +531,42 @@ def main():
                 ("Status", "status"),
                 ("Budget", "budget"),
                 ("Revenue", "revenue"),
+                ("Director", "director"),
             ]
 
             kv_items = []
             if row is not None:
-                for label, col in candidate_fields:
+                for label2, col in candidate_fields:
                     if col in row.index:
-                        val = fmt_value(row.get(col))
+                        val = fmt_value(row.get(col), col)
                         if val:
-                            kv_items.append((label, val))
+                            kv_items.append((label2, val))
 
-            st.markdown(
-                f"""
-                <div class="drawer-card">
-                    <div class="drawer-title">{picked}</div>
-                    <div class="drawer-sub">Match: {picked_score:.1%}</div>
-                    <p class="drawer-overview">{overview}</p>
+            kv_rows = ""
+            if kv_items:
+                for k, v in kv_items:
+                    # Escape any HTML in the values to prevent injection
+                    v_escaped = str(v).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    kv_rows += f'<div class="kv-row"><span class="kv-key">{k}</span><span class="kv-val">{v_escaped}</span></div>'
+                
+                kv_html = f'<div class="drawer-kv">{kv_rows}</div>'
+            else:
+                kv_html = ""
 
-                    
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            # Escape overview text as well
+            overview_escaped = overview.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            picked_escaped = picked.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+            full_html = f"""
+<div class="drawer-card">
+    <div class="drawer-title">{picked_escaped}</div>
+    <div class="drawer-sub">Match: {picked_score:.1%}</div>
+    <p class="drawer-overview">{overview_escaped}</p>
+    {kv_html}
+</div>
+"""
+            
+            st.markdown(full_html, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
