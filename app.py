@@ -1,4 +1,13 @@
+import sys
+import types
+
+# Create fake imghdr module
+if sys.version_info >= (3, 13):
+    imghdr = types.ModuleType("imghdr")
+    sys.modules["imghdr"] = imghdr
+
 import streamlit as st
+
 import pandas as pd
 import numpy as np
 import requests
@@ -6,6 +15,10 @@ from pathlib import Path
 import joblib
 import zipfile
 import io
+import platform
+st.write(sys.version)
+st.write(platform.python_version())
+
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
