@@ -1,7 +1,9 @@
-streamlit==1.19.0
-altair==4.2.2
-numpy
 pandas
+numpy
 scikit-learn
-matplotlib
-seaborn 
+streamlit
+joblib
+requests
+scipy
+Pillow
+streamlit-clickable-images
