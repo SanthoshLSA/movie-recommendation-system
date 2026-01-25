@@ -3,7 +3,7 @@
 A content-based movie recommender using TMDB dataset with 4,800+ movies.
 
 ## Live Demo
-[View App](https://movie-recommendation-system-a9jvmvyff5lcy9rkreappfd.streamlit.app/)
+[View App](https://movie-recommendation-system-pnyhiy9hd2ofuljtf4leqr.streamlit.app/)
 
 ## Features
 - Find similar movies based on content
